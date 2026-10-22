@@ -57,7 +57,9 @@ iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:14px;margin-bottom:16
 <body>
 <main>
 <header><h1>Cosmos Remote</h1><div id="st"><i></i><span>Connecting…</span></div></header>
-<div id="pair"><b>Not paired with a TV yet.</b><p>On the TV open Cosmos Home and select the phone icon in the top bar. Scan the QR code it shows with this phone's camera. It opens this page already paired.</p></div>
+<div id="pair"><b>Not paired with a TV yet.</b><p>On the TV open Cosmos Home and select the phone icon in the top bar. Scan the QR code with this phone's camera, or paste the code or link shown under it here.</p>
+<input type="text" id="code" placeholder="Paste code or link" autocomplete="off" autocapitalize="none" style="width:100%;font-size:16px;padding:12px 14px;border-radius:12px;border:0;margin:6px 0 10px">
+<button id="go" style="padding:11px 20px;border-radius:12px;border:0;background:#fff;color:#07080d;font-weight:600;font-size:15px;cursor:pointer">Pair</button><p id="perr" style="display:none">That does not look like a pairing code. It starts with "cosmos".</p></div>
 <div id="app">
 <input type="search" id="q" placeholder="Search movies and series" autocomplete="off" autocapitalize="none" enterkeyhint="search">
 <div class="tabs"><button id="t-movie" class="on">Movies</button><button id="t-series">Series</button><button id="t-list">My list</button></div>
@@ -85,11 +87,20 @@ iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:14px;margin-bottom:16
   function setOnline(v) { $('st').className = v ? 'on' : ''; $('st').lastChild.textContent = v ? 'TV connected' : 'TV not responding'; }
 
   try {
-    var h = location.hash.replace(/^#/, '');
-    if (/^cosmos[a-z0-9]{24}$/.test(h)) { localStorage.setItem('cosmos_topic', h); history.replaceState(null, '', location.pathname); }
+    var found = /cosmos[a-z0-9]{24}/.exec(location.hash + location.search);
+    if (found) { localStorage.setItem('cosmos_topic', found[0]); history.replaceState(null, '', location.pathname); }
     topic = localStorage.getItem('cosmos_topic');
   } catch (e) { }
-  if (!topic) { $('pair').style.display = 'block'; $('app').style.display = 'none'; $('st').lastChild.textContent = 'Not paired'; return; }
+  if (!topic) {
+    $('pair').style.display = 'block'; $('app').style.display = 'none'; $('st').lastChild.textContent = 'Not paired';
+    $('go').onclick = function () {
+      var m = /cosmos[a-z0-9]{24}/.exec($('code').value.toLowerCase());
+      if (!m) { $('perr').style.display = 'block'; return; }
+      try { localStorage.setItem('cosmos_topic', m[0]); } catch (e) { }
+      location.reload();
+    };
+    return;
+  }
 
   // ---- the TV, through ntfy.sh ----
   function listen() {
