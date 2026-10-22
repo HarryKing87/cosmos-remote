@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07080d">
+<title>Cosmos Remote</title>
+<style>
+:root{--bg:#07080d;--card:#12141d;--chip:#1f2233;--mute:#9aa0b8;--ok:#7ce0a0}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:max(18px,env(safe-area-inset-top)) 18px 90px}
+main{max-width:680px;margin:auto}
+header{display:flex;align-items:center;justify-content:space-between;margin:4px 0 16px}
+h1{font-size:24px;margin:0}
+#st{font-size:13px;padding:6px 12px;border-radius:20px;background:var(--chip);color:var(--mute);display:flex;align-items:center;gap:7px}
+#st i{width:8px;height:8px;border-radius:50%;background:var(--mute)}
+#st.on{color:#fff}#st.on i{background:var(--ok)}
+input{width:100%;font-size:18px;padding:13px 16px;border-radius:14px;border:0}
+.tabs{display:flex;gap:8px;margin:14px 0}
+.tabs button{flex:1;padding:10px;border-radius:12px;border:0;background:var(--chip);color:#fff;font-size:15px}
+.tabs button.on{background:#fff;color:var(--bg);font-weight:600}
+h2{font-size:15px;color:var(--mute);font-weight:500;margin:6px 0 12px}
+.c{display:flex;gap:12px;background:var(--card);border-radius:16px;padding:10px;margin-bottom:10px}
+.c img{width:70px;height:105px;object-fit:cover;border-radius:10px;background:var(--chip)}
+.c>div{flex:1;min-width:0}
+.n{font-weight:600;font-size:16px}
+.y{color:var(--mute);font-size:13px;margin:2px 0 8px}
+.b{display:flex;gap:6px;flex-wrap:wrap}
+.b button{padding:9px 12px;border-radius:10px;border:0;background:var(--chip);color:#fff;font-size:14px}
+.b .p{background:#fff;color:var(--bg);font-weight:600}
+.b button:disabled{opacity:.5}
+p{color:var(--mute)}
+#pair{background:var(--card);border-radius:16px;padding:18px;display:none}
+#pair b{color:#fff}
+#toast{position:fixed;left:0;right:0;bottom:calc(18px + env(safe-area-inset-bottom));text-align:center;pointer-events:none}
+#toast span{display:none;background:#fff;color:var(--bg);padding:10px 18px;border-radius:20px;font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<header><h1>Cosmos Remote</h1><div id="st"><i></i><span>Connecting…</span></div></header>
+<div id="pair"><b>Not paired with a TV yet.</b><p>On the TV open Cosmos Home and select the phone icon in the top bar. Scan the QR code it shows with this phone's camera. It opens this page already paired.</p></div>
+<div id="app">
+<input id="q" placeholder="Search movies and series" autocomplete="off" autocapitalize="none" enterkeyhint="search">
+<div class="tabs"><button id="t1" class="on">Search</button><button id="t2">My list</button></div>
+<h2 id="h"></h2>
+<div id="r"></div>
+</div>
+</main>
+<div id="toast"><span id="ms"></span></div>
+<script>
+(function () {
+  'use strict';
+  var CINEMETA = 'https://v3-cinemeta.strem.io', NTFY = 'https://ntfy.sh/';
+  var $ = function (i) { return document.getElementById(i); };
+  var topic = null, mode = 1, timer, items = [], myList = {}, pending = {}, es, online = false;
+
+  try {
+    var h = location.hash.replace(/^#/, '');
+    if (/^cosmos[a-z0-9]{24}$/.test(h)) { localStorage.setItem('cosmos_topic', h); history.replaceState(null, '', location.pathname); }
+    topic = localStorage.getItem('cosmos_topic');
+  } catch (e) { }
+  if (!topic) { $('pair').style.display = 'block'; $('app').style.display = 'none'; $('st').lastChild.textContent = 'Not paired'; return; }
+
+  function say(t) {
+    var s = $('ms'); s.textContent = t; s.style.display = 'inline-block';
+    clearTimeout(say.t); say.t = setTimeout(function () { s.style.display = 'none'; }, 2400);
+  }
+  function setOnline(v) {
+    online = v; $('st').className = v ? 'on' : '';
+    $('st').lastChild.textContent = v ? 'TV connected' : 'TV not responding';
+  }
+
+  // ---- talking to the TV through ntfy ----
+  function listen() {
+    es = new EventSource(NTFY + topic + '-tv/sse');
+    es.onmessage = function (e) {
+      var m; try { m = JSON.parse(JSON.parse(e.data).message); } catch (x) { return; }
+      if (m.hello) { setOnline(true); loadList(); return; }
+      var p = pending[m.re];
+      if (p) { delete pending[m.re]; clearTimeout(p.t); setOnline(true); p.ok(m); }
+    };
+  }
+  function ask(msg, wait) {
+    msg.re = Math.random().toString(36).slice(2, 10);
+    return new Promise(function (ok, fail) {
+      pending[msg.re] = { ok: ok, t: setTimeout(function () { delete pending[msg.re]; setOnline(false); fail(new Error('timeout')); }, wait || 9000) };
+      fetch(NTFY + topic + '-cmd', { method: 'POST', body: JSON.stringify(msg) }).catch(function () { delete pending[msg.re]; fail(new Error('network')); });
+    });
+  }
+  function ping() { ask({ a: 'ping' }, 7000).catch(function () { }); }
+  function loadList() {
+    return ask({ a: 'list' }).then(function (m) {
+      myList = {}; (m.list || []).forEach(function (x) { myList[x.id] = x; });
+      if (mode === 2) showList(); else repaintButtons();
+    }).catch(function () { });
+  }
+
+  // ---- Cinemeta (title data) ----
+  function catalog(type, path) {
+    return fetch(CINEMETA + '/catalog/' + type + '/' + path + '.json').then(function (r) { return r.json(); })
+      .then(function (j) { return (j.metas || []).filter(function (m) { return /^tt\d+$/.test(m.id); }).map(function (m) {
+        return { id: m.id, type: type, name: m.name, year: m.releaseInfo || '' }; }); }).catch(function () { return []; });
+  }
+  function search(q) {
+    return Promise.all([catalog('movie', 'top/search=' + encodeURIComponent(q)), catalog('series', 'top/search=' + encodeURIComponent(q))])
+      .then(function (a) { return a[0].slice(0, 8).concat(a[1].slice(0, 8)); });
+  }
+
+  // ---- screen ----
+  function draw(list, empty) {
+    var r = $('r'); r.textContent = ''; items = list;
+    if (!list.length) { var p = document.createElement('p'); p.textContent = empty; r.appendChild(p); return; }
+    list.forEach(function (it, i) {
+      var c = document.createElement('div'); c.className = 'c';
+      var im = document.createElement('img'); im.loading = 'lazy'; im.alt = '';
+      im.src = 'https://images.metahub.space/poster/small/' + it.id + '/img'; c.appendChild(im);
+      var d = document.createElement('div');
+      var n = document.createElement('div'); n.className = 'n'; n.textContent = it.name; d.appendChild(n);
+      var y = document.createElement('div'); y.className = 'y';
+      y.textContent = (it.type === 'movie' ? 'Movie' : 'Series') + (it.year ? '  ·  ' + it.year : ''); d.appendChild(y);
+      var b = document.createElement('div'); b.className = 'b';
+      [['play', '▶ Play on TV', 'p'], ['open', 'Details on TV', ''], ['list', '', '']].forEach(function (x) {
+        var k = document.createElement('button'); k.className = x[2]; k.dataset.a = x[0];
+        k.onclick = function () { act(x[0], it, k); }; b.appendChild(k);
+      });
+      d.appendChild(b); c.appendChild(d); r.appendChild(c);
+    });
+    repaintButtons();
+  }
+  function repaintButtons() {
+    var ks = $('r').querySelectorAll('button[data-a=list]');
+    for (var i = 0; i < ks.length; i++) ks[i].textContent = myList[items[i].id] ? '✓ In my list' : '+ My list';
+  }
+  function act(a, it, k) {
+    k.disabled = true;
+    ask({ a: 'act', do: a, id: it.id, type: it.type, n: it.name }).then(function (m) {
+      k.disabled = false;
+      if (a === 'list') {
+        if (m.inList) myList[it.id] = { id: it.id, type: it.type, name: it.name }; else delete myList[it.id];
+        say(m.inList ? 'Added to My list' : 'Removed from My list');
+        if (mode === 2) showList(); else repaintButtons();
+      } else say(a === 'play' ? 'Starting on the TV' : 'Opened on the TV');
+    }).catch(function () { k.disabled = false; say('The TV did not answer. Is Cosmos Home running?'); });
+  }
+  function showList() {
+    $('h').textContent = 'Your My list on the TV';
+    draw(Object.keys(myList).map(function (k) { return { id: k, type: myList[k].type, name: myList[k].name, year: '' }; }), 'Your list is empty.');
+  }
+  function showSearch() {
+    var q = $('q').value.trim();
+    if (!q) {
+      $('h').textContent = 'Popular right now';
+      Promise.all([catalog('movie', 'top'), catalog('series', 'top')]).then(function (a) {
+        if (mode === 1 && !$('q').value.trim()) draw(a[0].slice(0, 6).concat(a[1].slice(0, 6)), 'Nothing to show.');
+      });
+      return;
+    }
+    $('h').textContent = 'Results';
+    search(q).then(function (a) { if (mode === 1 && q === $('q').value.trim()) draw(a, 'Nothing found.'); });
+  }
+  function tab(n) {
+    mode = n; $('t1').className = n === 1 ? 'on' : ''; $('t2').className = n === 2 ? 'on' : '';
+    if (n === 1) showSearch(); else { showList(); loadList(); }
+  }
+  $('t1').onclick = function () { tab(1); };
+  $('t2').onclick = function () { tab(2); };
+  $('q').oninput = function () { if (mode !== 1) tab(1); clearTimeout(timer); timer = setTimeout(showSearch, 350); };
+
+  listen(); ping(); loadList(); showSearch();
+  setInterval(ping, 30000);
+})();
+</script>
+</body>
+</html>
